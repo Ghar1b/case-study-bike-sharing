@@ -1,0 +1,1355 @@
+---
+title: "Cyclistic Analysis Report"
+author: "Ibrahim Ahmadov"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: spacelab
+    highlight: tango
+    toc: true
+    toc_float: true
+    toc_depth: 5
+    citation_package: natbib
+bibliography: plots/ggmap_reference.bib
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Case Study: Bike-Sharing
+## 1. Business task
+
+This case study is a part of Google Data Analytics course. Cyclistic is a fictional bike-sharing company, however, the data is real. It encompasses information about bike-sharing stations in Chicago and total rides with rented bikes during more than 10 years, from 2013 until February 2023.
+
+The business task is to help design the marketing strategy. The project owner aims at converting casual riders into annual members. To achieve that goal the marketing team needs to better understand how annual members and casual riders differ in using rented bikes.
+
+My specific task was to analyze the available data of rides and provide 3 main recommendation for the marketing strategy, based on the data analysis.
+
+The requirement was to analyze the data for the last 12 months. However, I decided to use the whole dataset, since it was openly available for the whole period of operations.
+
+
+## 2. Data sources
+ 
+The data consisted of 74 CSV files in total. 65 files are chronologically ordered, containing data about rides for various periods, starting from 2013. 9 files contain information about stations. There are also some metadata files in text format. The data is openly accessible [here](https://divvy-tripdata.s3.amazonaws.com/index.html) under [this licence](https://www.divvybikes.com/data-license-agreement).
+
+Due to the relatively large volume of the data, R was my tool of choice for the whole process of combining, cleaning, processing and manipulating the data.
+
+## 3. Combining and cleaning the datasets
+### 3.1. Loading packages
+
+First, I downloaded and unzipped the files to a local directory. The next step was joining the tables into a single dataframe. The company has altered its naming conventions for some variables over time. The data for some of the variables, like birth year and gender, is not available for the whole period. Apparently, the collecting of this information has been discontinued several years ago. Notwithstanding the relative inconsistency of data in the files, I attempted not to miss any significant part of this data. Therefore, I unified the naming conventions and joined all available data for bike rides into a single dataframe.
+
+I loaded and installed the packages, needed for this and further steps:
+
+```{r eval = FALSE, message=FALSE, warning=FALSE}
+install.packages(c("arrow", "tidyverse", "lubridate", "sf", "ggmap"))
+
+library(tidyverse)
+library(lubridate)
+library(arrow)
+library(sf)
+library(ggmap)
+```
+
+All operations were performed in a local directory, containing all downloaded CSV files. If you want to run the code below, you need to adjust the directory path in the code chunk below accordingly.
+```{r eval=FALSE}
+setwd("C:/Users/path/to/your/working_directory")
+```
+
+### 3.2. Joining and unifying the data
+
+I joined all tables with stations data. That was a simple part, because there was not much variation in naming conventions in this part of data.
+```{r eval=FALSE}
+stations_combined <- list.files(pattern = "*.csv") %>%
+  lapply(read_csv) %>%
+  bind_rows()
+```
+The trips data, on the other hand, had many differences in naming equivalent variables. Therefore, I had to unify the names, while joining the files. First, I created a function to unify column names in the output table:
+```{r eval=FALSE}
+rename_columns <- function(df) {
+  colnames(df) <- gsub("from_station_name", "start_station_name", colnames(df))
+  colnames(df) <- gsub("03 - Rental Start Station Name", "start_station_name", colnames(df))
+  colnames(df) <- gsub("from_station_id", "start_station_id", colnames(df))
+  colnames(df) <- gsub("03 - Rental Start Station ID", "start_station_id", colnames(df))
+  colnames(df) <- gsub("to_station_name", "end_station_name", colnames(df))
+  colnames(df) <- gsub("02 - Rental End Station Name", "end_station_name", colnames(df))
+  colnames(df) <- gsub("to_station_id", "end_station_id", colnames(df))
+  colnames(df) <- gsub("02 - Rental End Station ID", "end_station_id", colnames(df))
+  colnames(df) <- gsub("trip_id", "ride_id", colnames(df))
+  colnames(df) <- gsub("01 - Rental Details Rental ID", "ride_id", colnames(df))
+  colnames(df) <- gsub("starttime", "started_at", colnames(df))
+  colnames(df) <- gsub("start_time", "started_at", colnames(df))
+  colnames(df) <- gsub("01 - Rental Details Local Start Time", "started_at", colnames(df))
+  colnames(df) <- gsub("stoptime", "ended_at", colnames(df))
+  colnames(df) <- gsub("end_time", "ended_at", colnames(df))
+  colnames(df) <- gsub("01 - Rental Details Local End Time", "ended_at", colnames(df))
+  colnames(df) <- gsub("usertype", "member_casual", colnames(df))
+  colnames(df) <- gsub("User Type", "member_casual", colnames(df))
+  colnames(df) <- gsub("01 - Rental Details Bike ID", "bikeid", colnames(df))
+  colnames(df) <- gsub("01 - Rental Details Duration In Seconds Uncapped", "tripduration", colnames(df))
+  colnames(df) <- gsub("Member Gender", "gender", colnames(df))
+  colnames(df) <- gsub("05 - Member Details Member Birthday Year", "birthday", colnames(df))
+  colnames(df) <- gsub("birthyear", "birthday", colnames(df))
+  
+  if("started_at" %in% colnames(df)) {
+    df$started_at <- as.POSIXct(df$started_at, format = "%m/%d/%Y %H:%M", tz = "UTC")
+  }
+  
+  if("ended_at" %in% colnames(df)) {
+    df$ended_at <- as.POSIXct(df$ended_at, format = "%m/%d/%Y %H:%M", tz = "UTC")
+  }
+
+  if("start_station_id" %in% colnames(df)) {
+    df$start_station_id <- as.character(df$start_station_id)
+  }
+  
+  if("end_station_id" %in% colnames(df)) {
+    df$end_station_id <- as.character(df$end_station_id)
+  }
+
+  if("ride_id" %in% colnames(df)) {
+    df$ride_id <- as.character(df$ride_id)
+  }
+  
+  return(df)
+}
+```
+  
+Another problem was that the data formats of variables sometimes wouldn't match, which didn't allow for creation of a consistent unified dataframe. Hence, within the above-demostrated function, I converted the format of start and end data variables to datetime, and the id variables to characters.
+
+There were also differing naming conventions for factors in various tables in the member_casual column. Therefore, I created a function to standardize the naming of these observations:
+```{r eval=FALSE}
+rename_observations <- function(df) {
+  df <- df %>%
+    mutate(member_casual = case_when(
+      member_casual == "Subscriber" ~ "member",
+      member_casual == "Customer" ~ "casual",
+      TRUE ~ member_casual
+    ))
+  return(df)
+}
+```
+Finally, I used both functions to create a unified dataframe:
+```{r eval=FALSE}
+combined_trips <- list.files(pattern = "*.csv") %>%
+  lapply(read_csv) %>%
+  lapply(rename_columns) %>%
+  lapply(rename_observations) %>%
+  bind_rows()
+```
+
+### 3.3. Calculating and filling the trip duration
+
+Tripduration was missing for some observations. It could be calculated as a difference between start- and end time of each trip.
+
+```{r eval=FALSE}
+combined_trips$tripduration <- ifelse(is.na(combined_trips$tripduration),
+                                      difftime(combined_trips$ended_at, combined_trips$started_at, units = "secs"),
+                                      combined_trips$tripduration)
+```
+
+### 3.4. Calculating and adding distance
+
+The distance between starting and ending stations for each trip could be possibly estimated as a difference between start and end station coordinates - probably that was the rationale behind adding the coordinates to the dataframe.
+
+Since the latitude and longitude data was not present in all observations, I decided to fill in the missing coordinates with the corresponding values from other observations, based on the common station ID.
+
+```{r eval=FALSE}
+combined_trips <- combined_trips %>%
+  group_by(start_station_id) %>%
+  mutate(start_lat = ifelse(is.na(start_lat), first(na.omit(start_lat)), start_lat),
+         start_lng = ifelse(is.na(start_lng), first(na.omit(start_lng)), start_lng))
+
+combined_trips <- combined_trips %>%
+  group_by(end_station_id) %>%
+  mutate(end_lat = ifelse(is.na(end_lat), first(na.omit(end_lat)), end_lat),
+         end_lng = ifelse(is.na(end_lng), first(na.omit(end_lng)), end_lng))
+
+```
+
+As a result, the number of observations with missing coordinates dropped from millions down to about 4 thousand.
+
+I filled the rest of the missing coordinates from the dataset of renting stations.
+
+The station names in both datasets were matched.
+```{r eval=FALSE}
+start_station_indices <- match(combined_trips$start_station_name, combined_stations$name)
+end_station_indices <- match(combined_trips$end_station_name, combined_stations$name)
+```
+
+Then, the missing coordinates were filled in the trips dataset.
+
+```{r eval=FALSE}
+combined_trips$start_lat[is.na(combined_trips$start_lat)] <- combined_stations$latitude[start_station_indices][is.na(combined_trips$start_lat)]
+
+combined_trips$start_lng[is.na(combined_trips$start_lng)] <- combined_stations$longitude[start_station_indices][is.na(combined_trips$start_lng)]
+
+combined_trips$end_lat[is.na(combined_trips$end_lat)] <- combined_stations$latitude[end_station_indices][is.na(combined_trips$end_lat)]
+
+combined_trips$end_lng[is.na(combined_trips$end_lng)] <- combined_stations$longitude[end_station_indices][is.na(combined_trips$end_lng)]
+```
+
+Now, only a handful of observations was missing the station coordinates and these observations were subsequently filtered out of the dataset.
+```{r eval=FALSE}
+combined_trips <- combined_trips %>%
+  filter(!is.na(start_lat) & !is.na(start_lng) & !is.na(end_lat) & !is.na(end_lng))
+```
+
+The next step was to calculate the distance between start and end stations with the help of haversine formula. First, I calculated the distance between starting and ending stations.
+```{r eval=FALSE}
+distance <- function(lat1, lon1, lat2, lon2) {
+  R <- 6371 # Radius of the earth in km
+  dLat <- (lat2-lat1) * pi/180  # convert degrees to radians
+  dLon <- (lon2-lon1) * pi/180 
+  a <- sin(dLat/2) * sin(dLat/2) +
+    cos(lat1 * pi/180) * cos(lat2 * pi/180) * 
+    sin(dLon/2) * sin(dLon/2)
+  c <- 2 * atan2(sqrt(a), sqrt(1-a))
+  d <- R * c # Distance in km
+  return(d)
+}
+```
+The, I saved the distance values in a new column.
+```{r eval=FALSE}
+combined_trips <- combined_trips %>%
+  mutate(distance = distance(start_lat, start_lng, end_lat, end_lng))
+
+```
+It must be noted that the distance variable does not correspond to the actual distance of each trip. In some cases, the calculated distance would equal to zero, because the driver would return the bike to the same station, from where it was taken Therefore, the distance variable should be applied with a pinch of salt, when comparing the riding habits of various rider types.
+
+### 3.5. Cleaning the unified dataset
+
+During preliminary visualization of the data, an obvious outlier attracted my attention: the trip duration in late 2020 was a negative number. So I checked the dataset:
+```{r eval=FALSE}
+nov_dec_trips <- combined_trips %>%
+  filter(year(started_at) == 2020 & month(started_at) %in% c(11, 12))
+nov_dec_trips
+```
+The start and end times in some observations appeared, as if they were mixed up. It could be due to the misplacement of entries, but it could also be due to banal mistyping. So I had to filter these entries out, before proceeding with further calculations.
+
+I counted the rows before and after the filtering to see how much I filter out.
+
+```{r eval=FALSE}
+rows_before_filtering <- nrow(combined_trips)
+
+combined_trips <- combined_trips %>%
+  filter(tripduration >= 0)
+
+rows_after_filtering <- nrow(combined_trips)
+
+filtered_rows <- rows_before_filtering - rows_after_filtering
+cat("Number of rows filtered out:", filtered_rows)
+```
+I filtered out ca. 11k of observations from the total of about 36M:
+36428553 - 10913 = 36417640
+
+There were also false data entries in station names and ID columns.
+Both station names and station IDs are used to specify the stations. Normally, IDs must mainly consist of numbers, names mainly consist of letters. In order to investigate these variables, I checked for IDs for regex, containing more than 3 letters:
+```{r eval=FALSE}
+filtered_issues <- combined_trips %>%
+  filter(str_detect(start_station_id, ".*[a-zA-Z]{3,}.*") |
+           str_detect(end_station_id, ".*[a-zA-Z]{3,}.*"))
+
+filtered_issues
+```
+I discovered more than 86k of dubious entries in the ID columns. However, the station names appeared normal for many of these entries. It didn't appear as a pattern of mutual misplacement.
+
+Therefore, the next step was to check, whether there were many errors in the station names. I searched for the station names that consisted of numbers only.
+```{r eval=FALSE}
+numeric_names <- combined_trips %>%
+  filter(
+    str_detect(start_station_name, "^[0-9]+$") |
+    str_detect(end_station_name, "^[0-9]+$")
+  )
+```
+There were only two observations, where IDs were wrongfully entered in the station names columns. So I filtered these out and decided to use the station names, instead of IDs in the further data manipulations:
+```{r eval=FALSE}
+combined_trips <- combined_trips %>%
+  filter(
+    !(start_station_name %in% numeric_names$start_station_name)
+  )
+```
+
+Now the dataset was optimized for calculations.
+
+The resulting dataframe was still pretty large and it threatened to overstrain my processor from time to time. In such situations you may want to save your data frame in a light file format, like feather or parquet, before proceeding with further manipulations.
+
+```{r eval=FALSE}
+  arrow::write_parquet(combined_trips, "C:/Users/path/to/your/local_directory/your_combined_dataset.parquet")
+```
+
+
+## 4. Analyzing data
+### 4.1. Comparing the average trip duration
+#### 4.1.1. Calculations
+
+Now, I have reached the actual "Analyze" phase of the data analysis, according to Google.The first step here was comparing different rider types by the average trip duration. There are casual riders, who pay either for a single-ride pass or for a full-day pass. Another major category are the holders of annual membership (regarded as members). Finally, the company has obviously experimented with offering some kind of special fee for dependent riders, which lasted only during three years and was discontinued thereafter. The latter type of members will be excluded from some calculations and plots, due to having zero impact on the outcome in most cases.
+
+I started with extracting years, months and weekdays from the datetime format and ordering the weekdays in the regular order.
+```{r eval=FALSE}
+# Convert started_at to datetime object and extract year and weekday
+combined_trips$year <- year(combined_trips$started_at)
+combined_trips$month <- month(combined_trips$started_at, label = TRUE)
+combined_trips$weekday <- weekdays(combined_trips$started_at)
+
+combined_trips$weekday <- factor(combined_trips$weekday,
+                                 levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+                                 ordered = TRUE)
+```
+Next, I calculated the average trip duration on the annual basis. I convert the year column to factor, so that years are displayed as integers on the plot afterwards.
+```{r eval=FALSE}
+avg_trip_duration_annually <- combined_trips %>%
+  group_by(year, member_casual) %>%
+  summarize(avg_duration = mean(tripduration, na.rm = TRUE)) %>%
+  ungroup()
+
+avg_trip_duration_annually$year <- as.factor(avg_trip_duration_annually$year)
+```
+I calculated the percentage of trip duration for each rider type from the total average.
+```{r eval=FALSE}
+total_avg_trip_duration_annually <- avg_trip_duration_annually %>%
+  group_by(year) %>%
+  summarize(total_avg_duration = sum(avg_duration))
+
+avg_trip_duration_annually <- left_join(avg_trip_duration_annually, total_avg_trip_duration_annually, by = "year")
+
+avg_trip_duration_annually$percentage <- (avg_trip_duration_annually$avg_duration / avg_trip_duration_annually$total_avg_duration) * 100
+```
+
+I continued calculating trip duration on various months and weekdays and the corresponding ratio for each rider type.
+```{r eval=FALSE}
+avg_trip_duration_monthly <- combined_trips %>%
+  group_by(year, month, member_casual) %>%
+  summarize(avg_duration = mean(tripduration, na.rm = TRUE)) %>%
+  ungroup()
+
+avg_trip_duration_monthly <- avg_trip_duration_monthly %>%
+  group_by(year, month) %>%
+  mutate(total_avg_duration = sum(avg_duration)) %>%
+  ungroup() %>%
+  mutate(percentage = (avg_duration / total_avg_duration) * 100)
+
+avg_trip_duration_weekly <- combined_trips %>%
+  group_by(year, weekday, member_casual) %>%
+  summarize(avg_duration = mean(tripduration, na.rm = TRUE)) %>%
+  ungroup()
+
+avg_trip_duration_weekly <- avg_trip_duration_weekly %>%
+  group_by(year, weekday) %>%
+  mutate(total_avg_duration = sum(avg_duration)) %>%
+  ungroup() %>%
+  mutate(percentage = (avg_duration / total_avg_duration) * 100)
+```
+
+#### 4.1.2. Plots and interpretation
+
+The first plot visualized the average trip duration for various rider types, year over year.
+```{r eval=FALSE}
+ggplot(avg_trip_duration_annually, aes(x = year, y = avg_duration, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")),
+            position = position_stack(vjust = 0.5), color = "white", size = 4) +
+  theme_minimal() +
+  labs(
+    title = "Average Trip Duration Year over Year (Annually)",
+    x = "Year",
+    y = "Average Trip Duration (seconds)",
+    fill = "User Type"
+  )
+
+```
+![](https://ams03pap005files.storage.live.com/y4ml0w3vSHx4qgboruEluxYtjH3qK4N2A9OEiwbaWPK7XoA_8HueFr5wlgn7DKgt3GjoazPBk3Aha17ibJYTRTIJjbsB4v-DlixdoYSksEPF7_TIoGtxGlXAVq0Zh27b_jg7d5yq8sT-rpBSvPNHB6h5dxt85v4kyKjjfAveQAQhaBShuiJndcC7Go6Uij_th4q?encodeFailures=1&width=1280&height=720)
+
+The key findings are:
+
+* The average trip duration has grown significantly in 2018 and was decreasing ever since - mostly due to the initial increase and the subsequent decline in trip duration among casual riders.
+* Members tend to take on the average 3 times shorter rides than the casual riders.
+* Members' average ride time remained relatively stable over years.
+* "Dependent" rider type was similar in its riding behavior to members - short and stable. It was abolished after three years of presence.
+
+These hypotheses can be concluded from these insights:
+
+* Members have more routinized riding behaviour than the casual riders.
+* They probably tend to rent bikes from the same start and end stations, while casual riders may tend to ride to remote locations, where no bike stations are available, so that they may be hindered to return the rented bike immediately after completing the ride.
+* Members rent bikes mainly for business-related activities, whereas casual riders tend to use bikes mainly for leisure.
+* The tariff policy for casual riders may prompt them to hold the rented bikes longer.
+
+If the single-ride pass doesn't specify a time limit for holding a rented bike, it may be prompting the casual riders to hold the bikes longer. In fact, in some cases bikes were returned by the casual riders several months after they were taken from the station. Almost no such cases were observed among members. Members may be less motivated to hold the rented bikes for an unnecessarily long time, because they can take them from the stations anyway, whenever the need arises.
+It could be speculated that the company changed its tariff policy over time, so that after 2018 it became more expensive to hold a bike for longer periods.
+Another possibility is the introduction of new technology or a different business model, such as dockless bikes. A shift to dockless bikes allows to log off the rented bike, without returning it to the dock. It alleviates the necessity to bring the bike to a station and shortens the trip duration, accordingly. The casual riders, who drive irregularly to remote locations, would benefit more from such model.
+
+```{r eval=FALSE}
+ggplot(avg_trip_duration_monthly, aes(x = month, y = avg_duration, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), position = position_stack(vjust = 0.5), size = 2) +
+  facet_wrap(~ year, nrow = 4, ncol = 3) + # Set the number of rows and columns for the facets
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 8, angle = 45),
+        plot.background = element_rect(fill = "white")) + # Add a white background to the plot
+  labs(
+    title = "Average Trip Duration Year over Year and on Various Months",
+    x = "Month",
+    y = "Average Trip Duration (seconds)",
+    fill = "User Type"
+  )
+```
+![](https://ams03pap005files.storage.live.com/y4m-wCd_zKblAHIZcibZ1U-vq52pitS1Gz1s0KyULxIzdkWA_q9xfZgHJG_GtsBSFpfZMVixnQ8Z6BHuMkeBQneKf5r0OR3qVmid232Rs-oLCBvECbEPpsQ-5xkYH_JQVFefnNyomnE6zpSW3Sn9iFF2IGItPolnLHrP01DudK1lhVTHyYL4WAjtDCZqWJYFu3X?encodeFailures=1&width=1280&height=720)
+
+The month by month comparison shows a dramatic increase in trip duration among casual riders in January and February of 2021, as well as in February of 2019 and January-February of 2020, which brings up the following hypotheses:
+
+* Maybe, there were temporary marketing campaigns in winter between 2018-2020, which made holding bikes for longer periods a less costly endeavor for casual riders.
+* Assuming, there was some kind of loophole in the tariff policy, holding bikes was not very expensive in general. In winter, however, it was more so alluring for casual riders to ride all the way home, instead of returning the rented bike to a nearby station, which would force them to walk the rest of the way.
+
+```{r eval=FALSE}
+ggplot(avg_trip_duration_weekly, aes(x = weekday, y = avg_duration, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), position = position_stack(vjust = 0.5), size = 3) +
+  facet_wrap(~ year, nrow = 3, ncol = 4) + # Set the number of rows and columns for the facets
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 8, angle = 45),
+        plot.background = element_rect(fill = "white")) +
+  labs(
+    title = "Average Trip Duration Year over Year and on Various Weekdays",
+    x = "Weekday",
+    y = "Average Trip Duration (seconds)",
+    fill = "User Type"
+  )
+```
+![](https://ams03pap005files.storage.live.com/y4m9SYJY5bOdyZVkYXmmG80zc2S0paqtvQNR4BFF8XT7D_LdMBewl73ongOuRlekfnCUCVHLfYHjLDtBqKccveo2hLnRLGk6CFG1bsN6OE_8OVQ0WAMn9JHuUp43zA2ggOWyeAXWmLi0eHJ3RTylC3TD-ck1BZzZb3VYEj_QrHvTQMBvPWLfJOovYFojVPy4YK4?encodeFailures=1&width=1280&height=720)
+
+It appears that casual riders tend to ride longer on weekends, which supports the the assumption that they rent the bikes more for recreation than for work.
+
+### 4.2. Comparing by the number of rides
+#### 4.2.1. Calculations
+
+The number of trips is a major variable to be compared with trip duration. If the business model of company is based on the correlation between income and the number of rides, then the number of trips should obviously be considered as decisive metric.
+
+To investigate this one, I calculated the total number of rides for each rider type and the ratio of each rider type from the total number, year over year.
+
+```{r eval=FALSE}
+rides_by_rider_type <- combined_trips %>%
+  group_by(year, member_casual) %>%
+  summarize(total_rides = n()) %>%
+  arrange(year, member_casual)
+
+rides_by_rider_type <- rides_by_rider_type %>%
+  group_by(year) %>%
+  mutate(percentage = total_rides / sum(total_rides) * 100)
+```
+
+The total number of rides by dependent riders is very small, because this model lasted for only 3 years. In the analysis of trip duration it didn't appear to be genuinely different in its pattern of behavior from members. Since it was dislodged a long time ago, we may disregard it to simplify the following calculations.
+
+```{r eval=FALSE}
+rides_by_rider_type <- rides_by_rider_type %>% 
+  filter(member_casual != "Dependent")
+```
+
+
+#### 4.2.2. Plot and interpretion
+
+I created a stacked bar chart for the total number of rides by rider type, year over year. This visualization has revealed an important difference in the dynamics of total trips, as compared to the dynamics of average duration.
+
+```{r eval=FALSE}
+ggplot(rides_by_rider_type, aes(x = year, y = total_rides, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), position = position_stack(vjust = 0.5), size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Total Number of Rides by Rider Type Year Over Year",
+    x = "Year",
+    y = "Total Number of Rides",
+    fill = "Rider Type"
+  ) +
+  scale_x_continuous(breaks = unique(rides_by_rider_type$year), 
+                     labels = unique(rides_by_rider_type$year))
+```
+![](https://ams03pap005files.storage.live.com/y4mlRWNvZ1pBFnnfvAPONt947LAo990FxVMcDB9VKpNCbIVbAC6GkVN36m6lc1AyahiJ_Pi08LPFOo8jZdByhzIzBXffBg6Gx1vxoMbGPiIv3eHWSr5xUN4hJCFmI6hE2xUtN_ekdxk0jgwVtJ55giSw4gPx6p4yQF4FHtpehgBRAOYytgOx97lZLFFkribbUMM?encodeFailures=1&width=1280&height=720)
+
+* While the previous plots demonstrated a significant increase in trip duration in 2018 with subsequent decrease in the following years, the total number of rides didn't reveal a significant fluctuation in 2018. It even slightly decreased from the previous year.
+* Members tend to use bikes less longer than casual riders, but they take rides definitely more frequently.
+* After 2020 there was a significant increase in the number of rides by casual riders, which could be due to introduction of a new tariff policy or a new business model.
+* As of the beginning of 2023 members became more dominating once again. However, it could be due to the unevenness of comparison, because the 2023 data encompasses only the first two months of the year: in Winter people may take significantly less rides for recreation, while the work-related riding patterns would rather sustain.
+
+Here I hypothesized further that the company has probably had a less efficient tariff policy in the previous years, which allowed casual members to hold the rented bikes longer. Probably, the company shifted its policy in policy towards raising the cost of delays for single-ride passes. If bikes are being held less time on the average, then there are more bikes available at each time, which should logically increase the total number of rides, leading to more efficient usage of bikes.
+
+
+### 4.3. Rides, starting and ending at same stations
+#### 4.3.1. Calculations
+
+Unfortunately, we cannot see, who rented the bikes and whether multiple rides were taken by a same person. However, we can compare the distance between the starting and ending stations. Another important hint would be the ratio of rides, starting and ending in same stations.
+
+I filtered the data to include only the rides that started and ended at the same station.
+```{r eval=FALSE}
+same_station_trips <- combined_trips %>%
+  filter(start_station_name == end_station_name)
+```
+Another way to do it, would be filtering the observations with "0" distance.
+
+I summarized the number of same-station rides and the number of total rides by rider type, year over year.
+```{r eval=FALSE}
+same_station_trips_by_year <- same_station_trips %>%
+  group_by(member_casual, year) %>%
+  summarise(same_station_rides = n()) %>%
+  arrange(member_casual, year)
+
+total_trips_by_year <- combined_trips %>%
+  group_by(member_casual, year) %>%
+  summarise(total_rides = n()) %>%
+  arrange(member_casual, year)
+
+same_station_trips_by_year <- same_station_trips_by_year %>%
+  left_join(total_trips_by_year, by = c("member_casual", "year"))
+```
+In the next step, I calculated the percentage of same-station rides in the total number of rides for each rider type, year over year.
+```{r eval=FALSE}
+same_station_trips_by_year <- same_station_trips_by_year %>%
+  mutate(same_station_percentage = (same_station_rides / total_rides) * 100)
+```
+Then, I applied this code on the whole period.
+```{r eval=FALSE}
+same_station_trips_total <- same_station_trips %>%
+  group_by(member_casual) %>%
+  summarise(same_station_rides = n()) %>%
+  arrange(member_casual)
+
+total_trips <- combined_trips %>%
+  group_by(member_casual) %>%
+  summarise(total_rides = n()) %>%
+  arrange(member_casual)
+
+same_station_trips_total <- same_station_trips_total %>%
+  left_join(total_trips, by = "member_casual")
+
+same_station_trips_total <- same_station_trips_total %>%
+  mutate(same_station_percentage = (same_station_rides / total_rides) * 100)
+
+same_station_trips_total
+```
+
+The result: Members rarely return the bikes to the starting station - that happens only in about 2% of all cases. Casual riders, however, in more than 10% of all cases bring the bike back to the same station, from where it was taken.
+
+#### 4.3.2. Plot and results
+
+I plotted the comparison of same-station trips' ratio year over year. This is what it looks like:
+```{r eval=FALSE}
+ggplot(same_station_trips_by_year, aes(x = year, y = same_station_percentage, group = member_casual, color = member_casual)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = unique(same_station_trips_by_year$year)) +
+  labs(title = "Same-Station Trips by Year (Percentage)",
+       x = "Year",
+       y = "Same-Station Trips Percentage",
+       color = "Rider Type") +
+  theme_minimal()
+```
+![](https://ams03pap005files.storage.live.com/y4mJtBBOY6VyQ5L8dePRnKTDyOqwpkn6kOBpe4o5j_LNkjj0rqlvLkZsFzpm09x3M-PIWewfkLexkJdPSB7geAMaY4tXwPWlSMj6UZBNTUiN1NVajXEUaV5H6EHV4O3Yi8MtEw1jOkEWbQeB1lbp_vbkcqSWxYpaXilZzopcvz-dQ1jzPNzT2mKaym67zhOf32I?encodeFailures=1&width=1280&height=720)
+
+This permanent trend supports the assumption that casual riders would use bikes mainly for recreation - just to ride around for some time.
+Assuming that members mainly ride to work, it seems logical that they usually don't return the bike to the same station.
+
+### 4.4. Comparing the distance
+#### 4.4.1. Calculations
+
+As per preliminary hypothesis, I assumed that members would regularly use the same start and end stations, while casual riders may tend to ride to random and remote locations, having hard time finding a nearby station to return the rented bike immediately after a ride. I cannot see how often each rider uses same starting or ending station, because the rides are not attributed to particular persons. However, I can compare the distance between starting and ending stations.
+
+I calculated the average distance between start and end stations for each rider type.
+
+```{r eval=FALSE}
+avg_distance_total <- combined_trips %>%
+  group_by(member_casual) %>%
+  summarise(avg_distance = mean(distance, na.rm = TRUE)) %>%
+  arrange(member_casual)
+
+avg_distance_total
+```
+
+This comparison revealed some difference, showing that the end stations for members are 2.02 km away on the average from their start stations, whereas for casual riders the distance is 2.22 km.
+
+As we remember that casual riders tend to return the bike to the start station more frequently, this may affect the results of calculations. So it would be more insightful to look at how these figures compare, when bikes were not returned to the starting stations.
+
+```{r eval=FALSE}
+avg_distance_total_no_zeros <- combined_trips %>%
+  filter(distance != 0) %>%
+  group_by(member_casual) %>%
+  summarise(avg_distance_no_zeros = mean(distance, na.rm = TRUE)) %>%
+  arrange(member_casual)
+
+avg_distance_total_no_zeros
+```
+
+Here, the difference in distance was more significant, being close to 19%, with 2.07 km in distance for members and 2.47 km for casual riders.
+
+### 4.4.2. Plot and results
+The year over year comparison has confirmed that the previous finding was a constant pattern:
+```{r eval=FALSE}
+avg_distance_by_year_no_zeros <- combined_trips %>%
+  filter(distance != 0) %>%
+  group_by(member_casual, year) %>%
+  summarise(avg_distance_no_zeros = mean(distance, na.rm = TRUE)) %>%
+  arrange(member_casual, year)
+
+ggplot(avg_distance_by_year_no_zeros, aes(x = year, y = avg_distance_no_zeros, group = member_casual, color = member_casual)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = unique(avg_distance_by_year_no_zeros$year)) +
+  labs(title = "Average Distance by Year (Excluding 0 Distance Observations)",
+       x = "Year",
+       y = "Average Distance",
+       color = "Rider Type") +
+  theme_minimal()
+```
+![](https://ams03pap005files.storage.live.com/y4mRxLO52Ks47ZujQX-9aXniw5NGuTmT-vCageZJ3qsO6IpH10Lq5hblT1PUzYQXQC9MOYrG4uZfshXb46VuhB_FgSSO_lMeTM9rtjlSeWhAd7ptBAO4XbgamHEiDUl3io84XHVrwVlPyc34i2jvnLaztXGgW-tPSzZh17x08xCPxn60OW_9WdgxP1jPSrMnsve?encodeFailures=1&width=1280&height=720)
+
+The difference in distance was particularly high in 2018 and 2019. It plummeted since 2020, which may be either due to pandemic-related shift in driving patterns or because of a new business model.
+
+In general, casual riders either ride around for leisure, returning the bikes to stations, from where they started, or they drive occasionally far away from any bike dock.
+
+### 4.5. Most popular stations
+#### 4.5.1. Most popular station by trip duration and number of rides
+
+In order to maintain the efficient distribution of bike fleet among stations, it is necessary to get insights into the ranking of stations by their popularity among riders.
+
+First, I looked at the top station on annual basis:
+
+```{r eval=FALSE}
+most_popular_stations <- combined_trips %>%
+  filter(!is.na(start_station_name)) %>%
+  group_by(year, start_station_name) %>%
+  summarize(total_duration = sum(tripduration, na.rm = TRUE)) %>%
+  top_n(n = 1, wt = total_duration) %>%
+  arrange(year)
+```
+
+The bar plot clearly demonstrated that "Streeter Dr & Grand Avenue" has been the most popular starting station 7 years in a row.
+```{r eval=FALSE}
+ggplot(most_popular_stations, aes(x = year, y = total_duration, fill = name, label = name)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_text(position = position_stack(vjust = 0.5), size = 3, angle = 90) +
+  theme_minimal() +
+  labs(
+    title = "Most Popular Starting Station by Total Trip Duration Year over Year",
+    x = "Year",
+    y = "Total Trip Duration (seconds)"
+  ) +
+  scale_x_continuous(breaks = unique(most_popular_stations$year), 
+                     labels = unique(most_popular_stations$year))
+```
+![](https://ams03pap005files.storage.live.com/y4mZVfxI-Hjk8GZTHcYnrHFl_x-HtSEnqt7Qa2DW8OHrRZdKvZl8no-0BXaaNBMilzZ7SwhK1eyjOjEeEWFLxxKlO1nCZZu7F3qtsML4fHPhpUYTCKi6ZAxaR0W2KvlGlOZSNSsvrB5pYotH5g1-4F-1ffI3nrL5OVPgf3YUCLXh-eSYgaJSrMEpbDqLXqt0EAu?encodeFailures=1&width=1280&height=720)
+
+Another angle to consider is the average count of trips per day at each station. In the code chunk below, I calculate the number of trips per day for each station and the average number of trips per day for each station, year over year.
+```{r eval=FALSE}
+trips_per_day <- combined_trips %>%
+  filter(!is.na(start_station_name)) %>%
+  mutate(day = as.Date(started_at)) %>%
+  group_by(day, start_station_name) %>%
+  summarise(trips = n())
+
+trips_by_station_year <- trips_per_day %>%
+  mutate(year = as.integer(format(day, "%Y"))) %>%
+  group_by(year, start_station_name) %>%
+  summarise(average_trips_per_day = mean(trips)) %>%
+  arrange(year, desc(average_trips_per_day))
+```
+Finally, I found the one most popular station for each year.
+```{r eval=FALSE}
+most_popular_stations <- trips_by_station_year %>%
+  group_by(year) %>%
+  mutate(rank = row_number(-average_trips_per_day)) %>%
+  filter(rank == 1) %>%
+  arrange(year)
+```
+The plot below shows the most popular stations by the number of rides and on annual basis. Even though slightly different from the previous, this metric has also confirmed that "Streeter Dr. & Grand Avenue" was the most popular station during 6 years out of 11.
+```{r eval=FALSE}
+ggplot(most_popular_stations, aes(x = year, y = average_trips_per_day, fill = start_station_name, label = start_station_name)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_text(position = position_stack(vjust = 0.5), size = 3, angle = 90) +
+  theme_minimal() +
+  labs(
+    title = "Most Popular Starting Station by Average Trips per Day Year over Year",
+    x = "Year",
+    y = "Average Trips per Day"
+  ) +
+  scale_x_continuous(breaks = unique(most_popular_stations$year), 
+                     labels = unique(most_popular_stations$year))
+```
+![](https://ams03pap005files.storage.live.com/y4mB1YPFVslAYDlNLkJubFaRVUyk19xZewK3Ybo9fDBuW5Giy7EfpimugUMnkRk5GLP4UAokq7tfnHQhfqbuYv6C0tWKHGQ5ZEghsiT_7YMWU6Rk9gzOy5w-fu7kcp75Lw6mIikPwXO64-I2-QhsfYy65Kz7IM4DCyyyveS6j44XJbXcP7adIzDCYlnhsSkAIV8?encodeFailures=1&width=1280&height=720)
+
+Finally, we should take a look at how the top stations compare for different rider types. I added the rider type (member_casual) as a grouping variable to the previously applied code.
+```{r eval=FALSE}
+trips_per_day_rider_type <- combined_trips %>%
+  filter(!is.na(start_station_name)) %>%
+  mutate(day = as.Date(started_at)) %>%
+  group_by(day, start_station_name, member_casual) %>%
+  summarise(trips = n())
+
+trips_by_station_year_rider_type <- trips_per_day_rider_type %>%
+  mutate(year = as.integer(format(day, "%Y"))) %>%
+  group_by(year, start_station_name, member_casual) %>%
+  summarise(average_trips_per_day = mean(trips)) %>%
+  arrange(year, desc(average_trips_per_day))
+
+most_popular_stations_rider_type <- trips_by_station_year_rider_type %>%
+  group_by(year, member_casual) %>%
+  mutate(rank = row_number(-average_trips_per_day)) %>%
+  filter(rank == 1) %>%
+  arrange(year, member_casual)
+
+most_popular_stations_rider_type <- most_popular_stations_rider_type %>%
+  filter(member_casual != "Dependent")
+```
+
+The visualization has revealed that the most popular stations differ significantly among members and casual riders. In fact, the two groups favor quite different locations - not in a single year were they coincidental.
+```{r eval= FALSE}
+ggplot(most_popular_stations_rider_type, aes(x = year, y = average_trips_per_day, fill = start_station_name, label = start_station_name)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_text(position = position_stack(vjust = 0.5), size = 3, angle = 90) +
+  theme_minimal() +
+  labs(
+    title = "Most Popular Starting Station by Average Trips per Day Year over Year for Each Rider Type",
+    x = "Year",
+    y = "Average Trips per Day"
+  ) +
+  scale_x_continuous(breaks = unique(most_popular_stations_rider_type$year), 
+                     labels = unique(most_popular_stations_rider_type$year)) +
+  facet_wrap(~ member_casual, nrow = 1)
+```
+![](https://ams03pap005files.storage.live.com/y4m7vIoRh7ba_8Fc1DR7idz_3cGbR_56hKca-9lVb3Hwyb-tw2Ao2Tr9C34CgF8fuZLZuUxuvDyuWl_kXrjj2U4xhqnO-EqzR2aGJs7Dbf6mwYZFDR32PAuvIbkCNaBnue8CSRfKtZJsfKQ4qV4bg_oQ4r5BCj4ZioHS83VIGsK4BmBnEXCQHxDYC3NoGZfGz3I?encodeFailures=1&width=1280&height=720)
+
+#### 4.5.2. Popularity map
+##### 4.5.2.1. Mapping stations by the number of trips
+
+As certain patterns of popularity hold over years for stations, we should also take a look at a bigger picture, in order to see how all stations in Chicago relate to each other in terms of popularity. For this goal, I visualized the distribution of trips and stations on the city map.
+First, I've built upon the previously created variables, calculating the average number of trips per day for each station and linked this dataframe to station coordinates.
+
+```{r eval=FALSE}
+average_trips_per_day <- trips_per_day_rider_type %>%
+  mutate(year = as.integer(format(day, "%Y"))) %>%
+  group_by(start_station_name) %>%
+  summarise(average_trips_per_day = mean(trips))
+
+average_trips_with_coordinates <- combined_trips %>%
+  select(start_station_name, start_lat, start_lng) %>%
+  distinct() %>%
+  inner_join(average_trips_per_day, by = "start_station_name")
+```
+
+I used the ggmap package [@ggmap] for spatial visualization of the map of Chicago. I used my API, which I obtained from the Google Cloud. You can copy your Geocoding API in the key value below, to use the code.
+
+```{r eval=FALSE}
+ggmap::register_google(key = "YourAPIfromGoogleCloud")
+
+chicago_map <- get_map(location = c(lon = -87.6298, lat = 41.8781), zoom = 11, maptype = "toner-lite", source = "stamen")
+chicago_map_sf <- ggmap::ggmap(chicago_map)
+```
+Then I added stations as colored points to the map of Chicago by coordinates. 
+The red points symbolize the most popular stations, yellow points stand for the medium ones and the green points are the least busy stations.
+```{r eval=FALSE}
+average_trips_with_coordinates <- average_trips_with_coordinates %>%
+  mutate(color_group = ntile(average_trips_per_day, 3))
+
+plt_map <- chicago_map_sf +
+  geom_point(data = average_trips_with_coordinates,
+             aes(x = start_lng, y = start_lat, color = as.factor(color_group)), size = 1.5) +
+  scale_color_manual(values = c("green", "yellow", "red"),
+                     labels = c("Lowest third", "Middle third", "Top third"),
+                     name = "Average trips per station") +
+  labs(title = "Distribution of Trips and Stations on a Map",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5))
+
+plt_map
+```
+![](https://ams03pap005files.storage.live.com/y4mMKT_t99CRsl_H_pht8VqJLgh17eEC0IA45QdclJNiyUbW1JZjBhEkOUCk4K2u2OYYxIw4fsOkdmfmYNlPMUEizc_Q2q63yK_e_JTtstB1zZwYcWz8684SBViGx_BuDevkf3-hsKUh476KqFMEFiZJkxaPsyUJAywbGP_ctDslEagv0RI4wORFcV6c_tLZV4w?encodeFailures=1&width=701&height=720)
+
+Obviously, the busiest stations are located in the downtown area, although some are in the suburbs, which may suggest that many people travel from the residential areas in suburbs to their offices in the downtown.
+It may be useful to see, which stations are favored by various rider types.
+
+##### 4.5.2.2. Members vs casual riders on the map
+I mapped the top 10 start stations for members and casual riders for the whole period and the top destination for each of those stations.
+First, I adjusted the code to keep the member_casual column in the average_trips_per_day dataframe:
+```{r eval=FALSE}
+average_trips_per_day <- trips_per_day_rider_type %>%
+  group_by(start_station_name, member_casual) %>%
+  summarise(average_trips_per_day = mean(trips))
+```
+
+I added back the latitude and longitude coordinates to the average_trips_per_day data frame
+```{r eval=FALSE}
+average_trips_with_coordinates <- average_trips_per_day %>%
+  inner_join(combined_trips %>% select(start_station_name, start_lat, start_lng) %>% distinct(),
+             by = "start_station_name")
+
+average_trips_with_coordinates <- average_trips_with_coordinates %>% 
+  select(-end_station_name) %>% 
+  distinct(start_station_name, member_casual, .keep_all = TRUE)
+```
+Next, I created two dataframes - one with the top 10 stations for members, and another with the top 10 stations for casual riders:
+```{r eval=FALSE}
+top_stations_members <- average_trips_with_coordinates %>%
+  filter(member_casual == "member") %>%
+  arrange(desc(average_trips_per_day)) %>%
+  head(10)
+
+top_stations_casual <- average_trips_with_coordinates %>%
+  filter(member_casual == "casual") %>%
+  arrange(desc(average_trips_per_day)) %>%
+  head(10)
+
+```
+Then, I found the most frequent end station, corresponding to each of the top 10 stations for both member and casual riders:
+```{r eval=FALSE}
+top_end_stations_members <- combined_trips %>%
+  filter(start_station_name %in% top_stations_members$start_station_name) %>%
+  count(start_station_name, end_station_name, end_lat, end_lng) %>%
+  group_by(start_station_name) %>%
+  slice_max(n, n = 1)
+
+top_end_stations_casual <- combined_trips %>%
+  filter(start_station_name %in% top_stations_casual$start_station_name) %>%
+  count(start_station_name, end_station_name, end_lat, end_lng) %>%
+  group_by(start_station_name) %>%
+  slice_max(n, n = 1)
+```
+I added the end station coordinates to the dataframes.
+```{r eval=FALSE}
+top_stations_members <- top_stations_members %>%
+  inner_join(top_end_stations_members, by = "start_station_name", suffix = c("", "_end"))
+
+top_stations_casual <- top_stations_casual %>%
+  inner_join(top_end_stations_casual, by = "start_station_name", suffix = c("", "_end"))
+```
+Finally, the map was ready for rendering.
+```{r eval=FALSE}
+plt_map <- chicago_map_sf +
+  geom_segment(data = top_stations_members,
+               aes(x = start_lng, y = start_lat, xend = end_lng, yend = end_lat),
+               color = "blue", size = 0.5, alpha = 0.8) +
+  geom_segment(data = top_stations_casual,
+               aes(x = start_lng, y = start_lat, xend = end_lng, yend = end_lat),
+               color = "red", size = 0.5, alpha = 0.8) +
+  geom_point(data = top_stations_members,
+             aes(x = start_lng, y = start_lat),
+             color = "blue", size = 2, alpha = 0.8) +
+  geom_point(data = top_end_stations_members,
+             aes(x = end_lng, y = end_lat),
+             color = "green", size = 4, shape = 22, fill = "green", alpha = 0.8) +
+  geom_point(data = top_stations_casual,
+             aes(x = start_lng, y = start_lat),
+             color = "red", size = 4, shape = 17, alpha = 0.8) +
+  geom_point(data = top_end_stations_casual,
+             aes(x = end_lng, y = end_lat),
+             color = "orange", size = 4, shape = 15, alpha = 0.8) +
+  labs(title = "Top 10 Stations for Members and Casual Riders in Chicago",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5))
+
+plt_map
+```
+![](https://ams03pap005files.storage.live.com/y4mBxzzJ82tkFA6-kdXeqgLJd9Pu3jigFO-M8t10_TvHkNijfS8JhUTiUIkuf2ckPL_44GnWatz0g0qkcRL8WVjNMVmp4sqhxoqjndCEQwEO3HCyObvXrtVMo22WlmBcC_4MhCFBIatXzy55aqXR8rHFIhm_vcLjypdRWCUIGQKEwmqbUeLUbm6kLusIIz6cKT7?encodeFailures=1&width=392&height=220)
+
+It shows the top 10 starting stations as blue points for members and as red triangles for casual riders. Each start station connects to its correspondingly most popular end station with a line. The end stations are marked as green squares for members and orange squares for casual riders.
+
+Unsurprisingly, the busiest starting stations are located in the downtown area. Interestingly though, their corresponding end stations are also located nearby, which shows that people tend to use bikes rather for short distances.
+
+Another interesting insight is that casual riders tend either to return the bike to the starting station or to drive along the seafront. Members tend to ride a bit further from the seafront, albeit in the downtown area, which suggests that they use the bikes mainly for work-related issues, like business meetings, while the casual riders obviously use the bikes more for leisure and sightseeing.
+
+### 4.6. Age and gender
+#### 4.6.1. Grouping and finding mean values
+
+The age and gender data has been discontinued several years ago. However, there is a significant chunk of data with these variables, which can be considered representative for the customer behavior in general. So I decided to analyze the impact of gender and age on client behavior.
+
+First, I transformed the birthday (actually, the year of birth) into age and filtered the observations with gender and age variables.
+```{r eval=FALSE}
+combined_trips <- combined_trips %>%
+  mutate(age = year(now()) - as.integer(birthday))
+
+riders_data <- combined_trips %>%
+  filter(!is.na(gender) & !is.na(birthday))
+```
+
+The dataframe was still heavy, so I decided to unburden it as much as possible to speed up the rendering.
+
+```{r eval=FALSE}
+riders_data <- select(riders_data, "rideable_type", "started_at", "member_casual", "gender", "age", "year", "weekday", "month", "distance", "tripduration")
+```
+
+While manipulating this chunk of data, I noticed some outliers.
+
+```{r eval=FALSE}
+outliers <- riders_data %>% 
+  filter(age > 120)
+```
+Some riders were too old to be true. 2222 rides were supposedly taken by people older than 120. Obviously, in some cases the age entries were false. So I had to get rid of the outliers.
+
+```{r eval=FALSE}
+riders_data <- riders_data %>% 
+  filter(age < 100)
+```
+
+Generally, males tend to rent bikes more often at any age. The most active age for both males and females is between 25 and 45.
+
+```{r eval=FALSE}
+ggplot(riders_data, aes(x = age, fill = gender)) +
+  geom_histogram(binwidth = 5, position = "dodge") +
+  scale_x_continuous(breaks = seq(0, max(riders_data$age), by = 10)) +
+  labs(title = "Ride Count by Age and Gender",
+       x = "Age",
+       y = "Ride Count",
+       fill = "Gender")
+```
+![](https://ams03pap005files.storage.live.com/y4mfbtliJtj3yBHfpZKnKoxZlLtqnEnVYqdbNBmcJVK2Bd6rfh9Xc3JmGUul7jeVgD6DmsMdQtgNqjFBBPOzmR64GDtG7CNzqJTM66SHPLOOGTQ0cLGb9iGZz-K9qGi1mnWM19CWK7KPlzPur3SkFXVKZQZqT5ly_B5zmnWp9tFsiyHn-P5FMCDQzJwmaYD88kT?encodeFailures=1&width=1280&height=720)
+
+75% of all customers over the whole period were male riders:
+```{r eval=FALSE}
+gender_counts <- table(riders_data$gender)
+
+gender_proportions <- prop.table(gender_counts)
+gender_proportions
+```
+The mean age of customers was 41.6.
+```{r eval=FALSE}
+mean_age <- riders_data %>%
+  summarize(mean_age = mean(age))
+mean_age
+```
+If we visualize the age distribution as histogram, we can see that the primary group of customers is aged between 25 and 45. Surprisingly, the youngest group, aged 15-25 is the second most passive after 75-85. I have two hypothesis to explain that:
+* Young people may be using their own bikes, so that they don't need to rent one.
+* The location of renting stations is not optimized for younger people - I assume that most stations may be closer to business centers and offices, than to universities and schools.
+```{r eval=FALSE}
+ggplot(riders_data, aes(x = age, fill = after_stat(count))) +
+  geom_histogram(binwidth = 10, color = "black") +
+  labs(title = "Distribution of Rider Ages", x = "Age", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        axis.text.x = element_text(size = 12, face = "bold"),
+        axis.text.y = element_text(size = 12, face = "bold"),
+        panel.grid.major = element_line(color = "gray70"),
+        panel.grid.minor = element_blank()) +
+  scale_x_continuous(breaks = seq(min(riders_data$age, na.rm = TRUE) - min(riders_data$age, na.rm = TRUE) %% 5, max(riders_data$age, na.rm = TRUE), by = 5)) +
+  scale_y_continuous(breaks = seq(0, max(riders_data$age, na.rm = TRUE) * 10, by = 10)) +
+  scale_fill_gradientn(colors = c("#56B4E9", "#0072B2", "#001F3F"), 
+                       guide = "none")
+```
+![](https://ams03pap005files.storage.live.com/y4mo5etuvaT_DzhBzrcDc_fQeKERMKK8JHHyFdkE0DS6cblGWcA0lb-o7fQr_fdVUGkxTfCheV8RGk2gDxYmY_Z53KcuH6GVV7dJNm9pQRmGh9rIuJ4stYIB1-BcDaUcrlMPq1653gC4AH4IFxUBAZjbyIh7cmO7lqgZ_CRfMQT_CG3sBlk2Dq9KEEJXBsusMhK?encodeFailures=1&width=922&height=519)
+
+Comparison of age distribution by rider type didn't show any significant differences, except that casual riders tend to be somewhat younger with the 25-35 group being dominant here, as opposed to the members, where it is the second prevailing age group after 35-45.
+```{r eval=FALSE}
+riders_data <- riders_data %>% 
+  filter(member_casual != "Dependent")
+
+ggplot(riders_data, aes(x = age, fill = ..count..)) +
+  geom_histogram(binwidth = 10, color = "black") +
+  labs(title = "Distribution of Rider Ages by Rider Type", x = "Age", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        axis.text.x = element_text(size = 12, face = "bold"),
+        axis.text.y = element_text(size = 12, face = "bold"),
+        panel.grid.major = element_line(color = "gray70"),
+        panel.grid.minor = element_blank()) +
+  scale_x_continuous(breaks = seq(min(riders_data$age, na.rm = TRUE) - min(riders_data$age, na.rm = TRUE) %% 5, max(riders_data$age, na.rm = TRUE), by = 5)) +
+  scale_y_continuous(breaks = seq(0, max(riders_data$age, na.rm = TRUE) * 10, by = 10)) +
+  scale_fill_gradientn(colors = c("#56B4E9", "#0072B2", "#001F3F"), 
+                       guide = "none") +
+  facet_wrap(~member_casual)
+
+```
+![](https://ams03pap005files.storage.live.com/y4m0IdmlnWKk4AKuiUGR-XTNL_qs0A9DHckA5rUZD7TvLDJBdNVi70lKadyzXdH4SjEX0WvxIBpSWPXcWWY4qj-djmKWuVchvcMyy5QxoRqTbSBwn6-TKVjTiNaX5N5NXN04Yl1u0JM6ZVdxALq92MHNnFr-Q4pur9g5AWBcepUN2ouo5pbLtavK2vHPp6Bkl1R?encodeFailures=1&width=613&height=470)
+
+#### 4.6.2. Performing regression analysis
+
+In order to assess  the relation between age and tripduration, I performed linear regression analysis on the complete dataset.
+```{r eval=FALSE}
+lm_results <- lm(tripduration ~ age, data = riders_data)
+
+summary(lm_results)
+```
+The linear regression model shows negative relationship between age and tripduration. The adjusted R-squared value of 1.106e-05 suggests that the model explains only a very small proportion of the variance in tripduration.
+
+The correlation coefficient is also insignificant, equaling to -0.0033.
+```{r eval=FALSE}
+slope <- coef(lm_results)[2]
+x_sd <- sd(riders_data$age)
+y_sd <- sd(riders_data$tripduration)
+
+corr_coef <- slope * (x_sd / y_sd)
+corr_coef
+```
+Next, I conducted the regression analysis on the complete dataset to see the relationship between gender and tripduration:
+```{r eval=FALSE}
+lm_results_sex <- lm(tripduration ~ gender, data = riders_data)
+
+summary(lm_results_sex)
+```
+The linear regression model shows that males generally tend to hold the bikes less longer than females, however the negative correlation is still very low in itself with adjusted R-squared value of 3.929e-05.
+
+When the distance between starting and ending stations is taken as independent variable, there appears to be a visible correlation with the age of riders.
+```{r eval=FALSE}
+
+ggplot(riders_data, aes(x = age, y = distance, color = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_x_continuous(breaks = seq(0, max(riders_data$age), by = 10)) +
+  labs(title = "Average Distance by Age and Gender",
+       x = "Age",
+       y = "Average Distance (km)",
+       color = "Gender")
+```
+![](https://ams03pap005files.storage.live.com/y4m3LJFRL_JJ89YSeYDl7Qx1bDCNpyXKbuCU0AAESml6um4gAsAOBIlfJg6d9oMPxGumYL2AAE9PaBZMYnDNIWzuSGW7eEnJySo5v2VelLKAuGd6HMNXRkqXZz_N7_Ne9gjfXL779-uMqaAACtcNvPzwSidilycWqczJfL-Cj7briFC_AwKbqJw51nyzJU9eLpJ?encodeFailures=1&width=1280&height=720)
+
+Unsurprisingly, the distance between stations seems to decline with the age of riders. This conclusion seems to hold equally for male and female riders.
+
+### 4.7. Different types of bikes
+#### 4.7.1. Calculations
+
+In recent years, the company started deploying various types of rideables.
+
+I opted here for the year over year comparison. The data for 2023 encompasses only the first months of the year, which are the last two months of winter. It cannot be adequately compared to the daily averages all over the year, because people would have different patterns of usage in winter, as compared to the yearly average. Therefore, I filtered the dataset to exclude the data for 2023 from this comparison.
+
+```{r eval=FALSE}
+combined_trips_filtered <- combined_trips %>%
+  filter(!is.na(rideable_type) & year != 2023)
+
+combined_trips_filtered <- select(combined_trips_filtered, rideable_type, started_at, start_station_name, member_casual, tripduration, distance, year)
+```
+I calculated, how many times per day on the average each rideable type has been used by each type of member_casual, year over year
+```{r eval=FALSE, message=FALSE, warning=FALSE}
+daily_rideable_usage <- combined_trips_filtered %>%
+  mutate(date = as.Date(started_at)) %>%
+  group_by(rideable_type, member_casual, date, year) %>%
+  summarise(daily_count = n()) %>%
+  group_by(rideable_type, member_casual, year) %>%
+  summarise(avg_daily_count = mean(daily_count))
+```
+I calculated the average trip duration in a similar manner.
+```{r eval=FALSE, message=FALSE, warning=FALSE}
+daily_duration_rideable <- combined_trips_filtered %>%
+  mutate(date = as.Date(started_at)) %>%
+  group_by(rideable_type, member_casual, year, date) %>%
+  summarise(daily_duration = mean(tripduration, na.rm = TRUE)) %>%
+  group_by(rideable_type, member_casual, year) %>%
+  summarise(avg_daily_duration = mean(daily_duration, na.rm = TRUE))
+```
+
+#### 4.7.2. Plots
+
+The first plot clearly shows the different patterns of usage. There is a declining trend in the usage of docked bikes. In recent years, members have not been using this type of bikes at all.
+```{r eval=FALSE}
+ggplot(daily_rideable_usage, aes(x = factor(year), y = avg_daily_count, fill = rideable_type)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~member_casual) +
+  labs(title = "Average Daily Count by Year",
+       x = "Year",
+       y = "Average Daily Count") +
+  theme_minimal()
+```
+![](https://ams03pap005files.storage.live.com/y4mwF333Aj1qD7n2gDovDkissjOmDx8IxiD9qUbHIU-K9IHTLxYXKyGoVjt9sIuo-0Glfk2NQWQkkmgMuIH6j1vnt36cmXSFAXVp3cThWnvIRs7DYO8lgY1LoTLpQ4eSK7SPOZKNdAeA6J_IiswGC6MU4rZWIsdX-jk-t6NNLg5wF_-LNuu5pFJ1sLGYKImhPwX?encodeFailures=1&width=922&height=519)
+
+The classic bikes (probably, the docless bikes) were more popular, however, the trend in their usage appears to be somewhat declining as well.
+The electric bikes are the absolute trend of recent years. The usage of electric bikes increased by 2.4 times among members and by 2.6 times among casual riders:
+```{r eval=FALSE}
+result <- daily_rideable_usage %>%
+  filter(member_casual == "member" & rideable_type == "electric_bike" & (year == 2020 | year == 2022)) %>%
+  summarize(ratio = avg_daily_count[year == 2022] / avg_daily_count[year == 2020]) %>%
+  pull(ratio)
+
+print(result)
+```
+Riding the docked bikes takes significantly more time than riding the other both types of bikes. This difference is more striking in the casual riders' group.
+```{r eval=FALSE}
+ggplot(daily_duration_rideable, aes(x = factor(year), y = avg_daily_duration, fill = rideable_type)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~member_casual) +
+  labs(title = "Average Daily Duration by Year",
+       x = "Year",
+       y = "Average Daily Duration (seconds)") +
+  theme_minimal()
+```
+![](https://ams03pap005files.storage.live.com/y4mglRbAgF1ia80VH2eic7Qq6rtIaFJl8x8pA4iF8qIyr-Z3l4nkrOuimu3n4t7mT1acZUfRpZsv1y8XFC82bRD_s4MHqR1PUxxL0Aw5QdbbhSbWWcHJQbx0dmAoH-dFtZbRSKrHwUcBdCe43zm2rhuM3-2Vp5ARaYtjcJE3jl1XCsT0lGqb6bJzxp_xOOw08rt?encodeFailures=1&width=922&height=519)
+
+Ultimately, people may prefer electric bikes to the classic ones due to the higher speed of travel, among other reasons.
+
+### 4.8. Seasons, holidays and weekdays
+#### 4.8.1. Seasonal trends
+
+Seasonal behavior patterns should be taken into consideration, when planning the distribution and deployment of bikes. The available data can be grouped by seasons, holidays and weekdays, using the available datetime information of each ride.
+I trimmed the dataset to free it from data, which was not applicable to this part of calculations.
+```{r eval=FALSE}
+reduced_trips <- select(combined_trips, -"birthday", -"gender", -"age")
+```
+I created new variables to investigate the changes in the number of rides and trip duration over time for casual riders and members, considering impact of various seasons, holidays, and week-ends.
+```{r eval=FALSE}
+reduced_trips <- reduced_trips %>%
+  mutate(date = as.Date(started_at))
+
+reduced_trips <- reduced_trips %>%
+  mutate(day_of_week = wday(started_at, label = TRUE))
+
+reduced_trips <- reduced_trips %>%
+  mutate(month = month(started_at, label = TRUE))
+
+reduced_trips <- reduced_trips %>%
+  mutate(year = year(started_at))
+
+reduced_trips <- reduced_trips %>%
+  mutate(hour = hour(started_at))
+
+reduced_trips <- reduced_trips %>%
+  mutate(is_weekend = day_of_week %in% c("Sat", "Sun"))
+```
+I created a function to define seasons, based on the month.
+```{r eval=FALSE}
+get_season <- function(month_num) {
+  if (month_num %in% c(3, 4, 5)) {
+    return("Spring")
+  } else if (month_num %in% c(6, 7, 8)) {
+    return("Summer")
+  } else if (month_num %in% c(9, 10, 11)) {
+    return("Fall")
+  } else {
+    return("Winter")
+  }
+}
+```
+I narrowed down the selection to the variables, which were necessary for this part of analysis.
+```{r eval=FALSE}
+reduced_trips <- reduced_trips %>%
+  select(member_casual, date, day_of_week, month, year, is_weekend, tripduration) %>% 
+  filter(member_casual != "Dependent")
+```
+Then I added the seasons to the dataframe. The following workaround may be helpful, if you are lacking the computing engine power for the code processing.
+```{r eval=FALSE}
+reduced_trips1 <- reduced_trips %>% 
+  filter(year < 2017)
+reduced_trips2 <- reduced_trips %>% 
+  filter(year > 2016 & year < 2020)
+reduced_trips3 <- reduced_trips %>% 
+  filter(year >= 2020)
+
+reduced_trips1 <- reduced_trips1 %>%
+  mutate(season = sapply(month, function(m) get_season(as.numeric(m))))
+reduced_trips2 <- reduced_trips2 %>%
+  mutate(season = sapply(month, function(m) get_season(as.numeric(m))))
+reduced_trips3 <- reduced_trips3 %>%
+  mutate(season = sapply(month, function(m) get_season(as.numeric(m))))
+
+reduced_trips <- bind_rows(reduced_trips1, reduced_trips2, reduced_trips3)
+```
+I created a dataframe with the dates of holidays in Chicago.
+```{r eval=FALSE}
+chicago_holidays <- tibble(
+  date = as.Date(c("2013-01-01", "2013-05-27", "2013-07-04", "2013-09-02", "2013-11-28", "2013-12-25",
+                   "2014-01-01", "2014-05-26", "2014-07-04", "2014-09-01", "2014-11-27", "2014-12-25",
+                   "2015-01-01", "2015-05-25", "2015-07-03", "2015-09-07", "2015-11-26", "2015-12-25",
+                   "2016-01-01", "2016-05-30", "2016-07-04", "2016-09-05", "2016-11-24", "2016-12-25",
+                   "2017-01-01", "2017-05-29", "2017-07-04", "2017-09-04", "2017-11-23", "2017-12-25",
+                   "2018-01-01", "2018-05-28", "2018-07-04", "2018-09-03", "2018-11-22", "2018-12-25",
+                   "2019-01-01", "2019-05-27", "2019-07-04", "2019-09-02", "2019-11-28", "2019-12-25",
+                   "2020-01-01", "2020-05-25", "2020-07-03", "2020-09-07", "2020-11-26", "2020-12-25",
+                   "2021-01-01", "2021-05-31", "2021-07-05", "2021-09-06", "2021-11-25", "2021-12-24",
+                   "2022-01-01", "2022-05-30", "2022-07-04", "2022-09-05", "2022-11-24", "2022-12-26",
+                   "2023-01-01", "2023-05-29", "2023-07-04", "2023-09-05", "2023-11-24", "2023-12-26")),
+  holiday = c("New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day",
+              "New Year's Day", "Memorial Day", "Independence Day", "Labor Day", "Thanksgiving", "Christmas Day"))
+```
+I added the holiday information to the trimmed dataset.
+```{r eval=FALSE}
+reduced_trips <- reduced_trips %>%
+  left_join(chicago_holidays, by = "date")
+```
+I had to create an ordered factor for the season variable - otherwise it appears in wrong order on a chart.
+```{r eval=FALSE}
+reduced_trips$season <- factor(seasonal_rides$season, levels = c("Winter", "Spring", "Summer", "Fall"), ordered = TRUE)
+```
+I aggregated the data to calculate the seasonal average of daily rides for each user type.
+```{r eval=FALSE}
+seasonal_rides <- reduced_trips %>%
+  group_by(season, member_casual, date) %>%
+  summarise(daily_rides = n(), .groups = "keep") %>%
+  group_by(season, member_casual) %>%
+  summarise(avg_rides_per_day = mean(daily_rides), .groups = "drop")
+```
+Finally, I created a grouped bar plot to visualize the comparison between member and casual ridership by season.
+```{r eval=FALSE}
+ggplot(seasonal_rides, aes(x = season, y = avg_rides_per_day, fill = member_casual)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), color = "black", width = 0.8) +
+  ggtitle("Member vs Casual Ridership by Season") +
+  xlab("Season") +
+  ylab("Average Rides per day") +
+  scale_fill_discrete(name = "User Type") +
+  theme_bw() +
+  geom_vline(xintercept = c(1.5, 2.5, 3.5), linetype = "dashed", color = "black", linewidth = 1)
+```
+![](https://ams03pap005files.storage.live.com/y4meqZtIsqOGJtKbmHiXEJELn1mM4quWaJwlK0LKpMdnVMLD-q_tlZ5myCWKwj4IlT_9Yaeu0U5BTWqtPCB_A7dZxnFamnchaJ2Onkpeze5wqfvdD4IjMM_Erkhq1t33kQpA92EWNXDEv4syaxFG8eICGs2SJRoMsxZwgRfBCGK9xR25FyPH3WiMJ0xNMOJliSv?encodeFailures=1&width=922&height=519)
+
+As expected, the number of rides grows from winter to summer and starts plummeting in autumn. However, the ratios are different, when we compare members to casual riders. While members tend to ride 3.2 times more often in summer than in winter, the difference ratio for casual riders is 13.9 times, which is significantly higher. It may hint to the different circumstances of ridership, where member are driving more out of necessity (related to work), while casual riders tend to rent bikes probably mainly for optional reasons, such as leisure and recreation.
+
+Next, I calculated the average trip duration.
+```{r eval=FALSE}
+average_trip_duration <- reduced_trips %>%
+  group_by(member_casual, season, date) %>%
+  summarise(daily_avg_tripduration = mean(tripduration), .groups = "drop") %>%
+  group_by(member_casual, season) %>%
+  summarise(avg_tripduration = mean(daily_avg_tripduration), .groups = "drop")
+```
+The visualization has revealed an interesting pattern.
+```{r eval=FALSE}
+ggplot(average_trip_duration, aes(x = season, y = avg_tripduration, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.8) +
+  ggtitle("Average Trip Duration by Season") +
+  xlab("Season") +
+  ylab("Average Trip Duration") +
+  scale_fill_discrete(name = "User Type") +
+  theme_bw()
+```
+![](https://ams03pap005files.storage.live.com/y4miAHUBE53RzGLptetMDukc_NRFQNXya2CVdB9ufUeDudr6i801JVIoSz8_wwK7VBpc2ylqjHPSH9MbWIU0tDa7R-lP7unl2Px_iuKfwasxXF76e1LRtAzRCjuEFv9b4H19w9yWPmDM3Cf4HhyTAnK-3ObSIZvpMw7EADBILTbcbjgwG349hv_CQ99ypoBPCFe?encodeFailures=1&width=1280&height=720)
+
+The seasonal pattern of the average duration of trips for members can be assumed to be based on the weather conditions with the longest trip duration in summer and the shortest in winter. Quite different is the pattern of usage for casual riders. They hold the rented bikes, on the average, almost 2 times longer in winter than in summer.
+
+
+#### 4.8.2. Investigating the data by holidays and weekdays
+
+I introduced the new variable day_type to differentiate between weekends, non-weekends and holidays. Then, I aggregated the dataset by day types and user types to find the ratio of members to casual riders on holidays, weekends and business days.
+```{r eval=FALSE}
+day_type_ratios <- reduced_trips %>%
+  mutate(day_type = case_when(
+    is_weekend ~ "Weekend",
+    !is.na(holiday) ~ "Holiday",
+    TRUE ~ "Non-Weekend"
+  )) %>%
+  group_by(day_type, member_casual) %>%
+  summarise(total_rides = n(), .groups = "drop") %>%
+  pivot_wider(names_from = member_casual, values_from = total_rides) %>%
+  mutate(ratio = member / casual) %>%
+  select(day_type, ratio)
+
+day_type_ratios
+```
+Members and casual riders rent the bikes with the same frequency on weekends (member/casual = 1.07). However, on business days members use the rented bikes 3 times more often than the casual riders (member/casual = 3.05). On holidays, the ratio is reversed to the advantage of casual riders (member/casual = 0.795).
+
+#### 4.8.3. Popular hours
+
+I assumed that number of rides may differ significantly, depending on the daytime.
+
+I started with grouping data by rider type and hour to calculate the number of rides and the average tripduration.
+```{r eval=FALSE, message=FALSE, warning=FALSE}
+popular_hours <- reduced_trips %>%
+  group_by(member_casual, hour) %>%
+  summarise(
+    ride_count = n(),
+    avg_tripduration = mean(tripduration, na.rm = TRUE)
+  )
+```
+Then I calculated the most popular hours by ride count and average trip duration for each rider type. 17 o'clock is the most popular usage time for both rider types.
+```{r eval=FALSE}
+popular_hours_by_ride_count <- popular_hours %>%
+  group_by(member_casual) %>%
+  slice(which.max(ride_count)) %>%
+  select(member_casual, hour, ride_count)
+```
+Next step was calculating the start time of the longest rides on the average.
+```{r eval=FALSE}
+popular_hours_by_avg_tripduration <- popular_hours %>%
+  group_by(member_casual) %>%
+  slice(which.max(avg_tripduration)) %>%
+  select(member_casual, hour, avg_tripduration)
+```
+For both types of riders the longest rides are the rides, which start at 3 o'clock in the morning. Here I hypothesized that customers are reluctant to return the bike on time in late hours due to being tired or sleepy.
+
+Then I started preparing a comprehensive overview of all daily hours.
+I created a new column for the two-hour blocks.
+```{r eval=FALSE}
+reduced_trips <- reduced_trips %>%
+  mutate(two_hour_block = (hour %/% 2) * 2)
+```
+I grouped data and calculated the ride count.
+```{r eval=FALSE}
+rides_by_two_hour_block <- reduced_trips %>%
+  group_by(member_casual, date, two_hour_block) %>%
+  summarise(ride_count = n(), .groups = "drop")
+```
+Then, I calculated the average ride count for each two-hour block and rider type.
+```{r eval=FALSE}
+average_rides_by_two_hour_block <- rides_by_two_hour_block %>%
+  group_by(member_casual, two_hour_block) %>%
+  summarise(average_rides = mean(ride_count), .groups = "drop")
+```
+I visualized the two-hour blocks as a bar chart.
+```{r eval=FALSE}
+ggplot(average_rides_by_two_hour_block, aes(x = factor(two_hour_block), y = average_rides, fill = member_casual)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black", width = 0.8) +
+  ggtitle("Average Ride Count per Day for Each Two-Hour Block by Rider Type") +
+  xlab("Two-Hour Block") +
+  ylab("Average Ride Count") +
+  scale_fill_discrete(name = "User Type") +
+  theme_bw()
+```
+![](https://ams03pap005files.storage.live.com/y4mmPGL40Iewv3HjnBbDDw5Fh3q3IPJfKVMLSRQVWUTRFYn1Cu3ImHKaItLwH_HZfeTKZMgTqScReKy8sqoDrFETUWnCsOVfMwhkdQknYf374jXh8cvD57H2vQ_dWK_MC14yLJOux8RKcWFp-LIah98_idTgM3cadJers0E96KKr5_HiSu5xj_4om7BMeGj5-XA?encodeFailures=1&width=922&height=519)
+
+Members tend to use the bikes more intensively around 6-8 o'clock in the morning and at 16-18 o'clock in the evening, with lower usage intensity in between. The usage frequency by casual riders, while being lower in general, rises gradually in the morning hours, peaks around 16 o'clock and declines subsequently. During night hours, casual riders seem to rent the bikes even slightly more often than the members. These findings seem to support the assumption that the two types of riders use the bikes for different reasons (work vs. leisure).
+
+## 5. Summary
+
+Following theses can be concluded from the insights, gained from the data analyzed in this case study:
+
+* members use bikes mainly for work (tralling to work, attending business meetings, during the break etc.), casual riders use bikes mainly for leisure and recreation;
+* members take more rides than casual riders;
+* casual riders hold the rented bikes longer;
+* males use bikes more often than females;
+* the most active age group are the people aged between 25 and 45;
+* in recent years, electric bikes and dockless bikes have become more popular than the docked bikes.
+
+The two types of users embody two different mentalities: For one group bike is a working tool, for another group - it is a means for entertainment and leisure. The incentives for usage and user behavior patterns are very different among these two groups. For this reason, I highly doubt that the conversion of casual riders should be prioritized in the marketing strategy. However, there is a higher chance to convert those casual riders, who were previously studying or not regularly working for another reason, once they reach the age of business activity.
+
+My first recommendation would be to target primarily business people, aged between 25 and 45 in the marketing communications.
+
+Second, there is a relatively high chance to convert the 25-35 age group among casual riders into members, when they become a bit older or once they find a refular job. I would recommend resuming the communication with those customers, who rented the bikes several years ago, once they reach the 30-year old threshold or become employed.
+
+Dockless bikes have seemingly contributed to the solution of the prolonged riding problem, which we observed among casual riders in previous years. Assuming that these bikes transmit the geolocation data, the company may want to analyze the locations, where the rented bikes are being parked or returned by casual riders. The points of concentration may help define, where to open new stations. This would help to convert some casual riders into members.
+
+# Appendix: Data License Agreement
+
+Lyft Bikes and Scooters, LLC (“Bikeshare”) operates the City of Chicago’s (“City”) Divvy bicycle sharing service. Bikeshare and the City are committed to supporting bicycling as an alternative transportation option. As part of that commitment, the City permits Bikeshare to make certain Divvy system data owned by the City (“Data”) available to the public, subject to the terms and conditions of this License Agreement (“Agreement”). By accessing or using any of the Data, you agree to all of the terms and conditions of this Agreement.
+
+1. __License.__ Bikeshare hereby grants to you a non-exclusive, royalty-free, limited, perpetual license to access, reproduce, analyze, copy, modify, distribute in your product or service and use the Data for any lawful purpose (“License”).
+2. __Prohibited Conduct.__ The License does not authorize you to do, and you will not do or assist others in doing, any of the following
+
+* Use the Data in any unlawful manner or for any unlawful purpose;
+* Host, stream, publish, distribute, sublicense, or sell the Data as a stand-alone dataset; provided, however, you may include the Data as source material, as applicable, in analyses, reports, or studies published or distributed for non-commercial purposes;
+* Access the Data by means other than the interface Bikeshare provides or authorizes for that purpose;
+* Circumvent any access restrictions relating to the Data;
+* Use data mining or other extraction methods in connection with Bikeshare's website or the Data;
+* Attempt to correlate the Data with names, addresses, or other information of customers or Members of Bikeshare; and
+* State or imply that you are affiliated, approved, endorsed, or sponsored by Bikeshare.
+* Use or authorize others to use, without the written permission of the applicable owners, the trademarks or trade names of Lyft Bikes and Scooters, LLC, the City of Chicago or any sponsor of the Divvy service. These marks include, but are not limited to DIVVY, and the DIVVY logo, which are owned by the City of Chicago.
+3. __No Warranty. THE DATA IS PROVIDED “AS IS,” AS AVAILABLE (AT BIKESHARE’S SOLE DISCRETION) AND AT YOUR SOLE RISK. TO THE MAXIMUM EXTENT PROVIDED BY LAW BIKESHARE DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. BIKESHARE FURTHER DISCLAIMS ANY WARRANTY THAT THE DATA WILL MEET YOUR NEEDS OR WILL BE OR CONTINUE TO BE AVAILABLE, COMPLETE, ACCURATE, TIMELY, SECURE, OR ERROR FREE.__
+
+4. __Limitation of Liability and Covenant Not to Sue.__ Bikeshare, its parent, affiliates and sponsors, and their respective directors, officers, employees, or agents will not be liable to you or anyone else for any loss or damage, including any direct, indirect, incidental, and consequential damages, whether foreseeable or not, based on any theory of liability, resulting in whole or in part from your access to or use of the Data. You will not bring any claim for damages against any of those persons or entities in any court or otherwise arising out of or relating to this Agreement, the Data, or your use of the Data. In any event, if you were to bring and prevail on such a claim, your maximum recovery is limited to $100 in the aggregate even if you or they had been advised of the possibility of liability exceeding that amount.
+5. __Ownership and Provision of Data.__ The City of Chicago owns all right, title, and interest in the Data. Bikeshare may modify or cease providing any or all of the Data at any time, without notice, in its sole discretion.
+6. __No Waiver.__ Nothing in this Agreement is or implies a waiver of any rights Bikeshare or the City of Chicago has in the Data or in any copyrights, patents, or trademarks owned or licensed by Bikeshare, its parent, affiliates or sponsors. The DIVVY trademarks are owned by the City of Chicago.
+7. __Termination of Agreement.__ Bikeshare may terminate this Agreement at any time and for any reason in its sole discretion. Termination will be effective upon Bikeshare’s transmission of written notice to you at the email address you provided to Bikeshare in connection with this or by Bikeshare's announcement on its website (currently www.divvybikes.com/data) that it is revoking all licenses. Sections 2–6 and 9–10 will survive termination.
+8. __Contact.__ Questions relating to this Agreement, including requests for permission to use trademarks and trade names, should be sent to bike-data@lyft.com.
+9. __Applicable Law and Forum.__ This Agreement is governed by the laws of the State of Illinois, without regard to conflicts of law principles. Any dispute arising under or relating to this Agreement will be brought only in a court of competent jurisdiction sitting in New York City, New York.
+10. __Entire Agreement.__ This Agreement is the complete and exclusive agreement and understanding between Bikeshare and you with respect to its subject matter and supersedes all prior or contemporaneous oral or written agreements or understandings relating to the subject matter.
+
+# Sources
+[Divvy trip data (2022)](https://divvy-tripdata.s3.amazonaws.com/index.html)
